@@ -2,26 +2,26 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type {
-  SDKConfig,
-  TrackingData,
-  OpenAIChatParams,
-  OpenAIChatResponse,
-  OpenAIStreamParams,
-  OpenAIStreamChunk,
-  AzureChatParams,
-  AzureChatResponse,
-  AzureStreamParams,
-  ClaudeMessageParams,
-  ClaudeMessageResponse,
-  ClaudeStreamParams,
-  GeminiGenerateParams,
-  GeminiGenerateResponse,
-  BedrockChatParams,
-  BedrockChatResponse,
-  ProviderType,
-  RetryConfig,
-  StatsFilter,
-  UsageStats,
+    SDKConfig,
+    TrackingData,
+    OpenAIChatParams,
+    OpenAIChatResponse,
+    OpenAIStreamParams,
+    OpenAIStreamChunk,
+    AzureChatParams,
+    AzureChatResponse,
+    AzureStreamParams,
+    ClaudeMessageParams,
+    ClaudeMessageResponse,
+    ClaudeStreamParams,
+    GeminiGenerateParams,
+    GeminiGenerateResponse,
+    BedrockChatParams,
+    BedrockChatResponse,
+    ProviderType,
+    RetryConfig,
+    StatsFilter,
+    UsageStats
 } from './types';
 import { fetchPricing, calculateCost, ModelPricing } from './pricing';
 
@@ -83,15 +83,18 @@ export class LLMTrackerSDK {
       });
     }
 
-    const [_, fetchedPricing] = await Promise.all([
-      this.config.database.connect(),
-      fetchPricing(),
-    ]);
+    const promises: Promise<unknown>[] = [fetchPricing()];
+    if (this.config.database) {
+      promises.push(this.config.database.connect());
+    }
+
+    const results = await Promise.all(promises);
+    const fetchedPricing = results[0] as Record<string, ModelPricing>;
 
     this.pricing = { ...fetchedPricing, ...this.config.customPricing };
     this.connected = true;
 
-    if (this.config.batchSize && this.config.batchIntervalMs) {
+    if (this.config.database && this.config.batchSize && this.config.batchIntervalMs) {
       this.startBatchProcessor();
     }
   }
@@ -102,13 +105,15 @@ export class LLMTrackerSDK {
       this.batchTimer = null;
     }
     await this.flushBatch();
-    await this.config.database.disconnect();
+    if (this.config.database) {
+      await this.config.database.disconnect();
+    }
     this.connected = false;
   }
 
   async getStats(filter: StatsFilter = {}): Promise<UsageStats | null> {
-    if (!this.config.database.getStats) {
-      console.warn('[LLM-Tracker] Database adapter does not support getStats');
+    if (!this.config.database?.getStats) {
+      console.warn('[LLM-Tracker] Database adapter not configured or does not support getStats');
       return null;
     }
     return this.config.database.getStats(filter);
@@ -163,7 +168,7 @@ export class LLMTrackerSDK {
   }
 
   private async track(data: TrackingData): Promise<void> {
-    if (!this.connected) return;
+    if (!this.connected || !this.config.database) return;
 
     if (this.config.batchSize) {
       this.trackingQueue.push(data);
@@ -195,10 +200,10 @@ export class LLMTrackerSDK {
     const batch = this.trackingQueue.splice(0, this.trackingQueue.length);
 
     try {
-      if (this.config.database.saveBatch) {
+      if (this.config.database?.saveBatch) {
         await this.config.database.saveBatch(batch);
-      } else {
-        await Promise.all(batch.map((data) => this.config.database.save(data)));
+      } else if (this.config.database) {
+        await Promise.all(batch.map((data) => this.config.database!.save(data)));
       }
     } catch (err) {
       console.error('[LLM-Tracker] Failed to save batch:', err instanceof Error ? err.message : err);
@@ -267,6 +272,8 @@ export class LLMTrackerSDK {
       const promptTokens = response.usage?.prompt_tokens ?? 0;
       const completionTokens = response.usage?.completion_tokens ?? 0;
 
+      const costUsd = calculateCost(params.model, promptTokens, completionTokens, this.pricing);
+
       this.track({
         requestId,
         projectName: this.config.projectName,
@@ -277,13 +284,21 @@ export class LLMTrackerSDK {
           completionTokens,
           totalTokens: response.usage?.total_tokens ?? 0,
         },
-        costUsd: calculateCost(params.model, promptTokens, completionTokens, this.pricing),
+        costUsd,
         timestamp: new Date(),
         latencyMs: Date.now() - startTime,
         success: true,
       });
 
-      return response;
+      return {
+        ...response,
+        usageInfo: {
+          promptTokens,
+          completionTokens,
+          totalTokens: response.usage?.total_tokens ?? 0,
+          costUsd,
+        },
+      };
     } catch (err) {
       this.track({
         requestId,
@@ -310,6 +325,8 @@ export class LLMTrackerSDK {
       const promptTokens = response.usage.input_tokens;
       const completionTokens = response.usage.output_tokens;
 
+      const costUsd = calculateCost(params.model, promptTokens, completionTokens, this.pricing);
+
       this.track({
         requestId,
         projectName: this.config.projectName,
@@ -320,13 +337,21 @@ export class LLMTrackerSDK {
           completionTokens,
           totalTokens: promptTokens + completionTokens,
         },
-        costUsd: calculateCost(params.model, promptTokens, completionTokens, this.pricing),
+        costUsd,
         timestamp: new Date(),
         latencyMs: Date.now() - startTime,
         success: true,
       });
 
-      return response;
+      return {
+        ...response,
+        usageInfo: {
+          promptTokens,
+          completionTokens,
+          totalTokens: promptTokens + completionTokens,
+          costUsd,
+        },
+      };
     } catch (err) {
       this.track({
         requestId,
@@ -355,6 +380,8 @@ export class LLMTrackerSDK {
       const promptTokens = response.response.usageMetadata?.promptTokenCount ?? 0;
       const completionTokens = response.response.usageMetadata?.candidatesTokenCount ?? 0;
 
+      const costUsd = calculateCost(model, promptTokens, completionTokens, this.pricing);
+
       this.track({
         requestId,
         projectName: this.config.projectName,
@@ -365,13 +392,21 @@ export class LLMTrackerSDK {
           completionTokens,
           totalTokens: response.response.usageMetadata?.totalTokenCount ?? 0,
         },
-        costUsd: calculateCost(model, promptTokens, completionTokens, this.pricing),
+        costUsd,
         timestamp: new Date(),
         latencyMs: Date.now() - startTime,
         success: true,
       });
 
-      return response;
+      return {
+        ...response,
+        usageInfo: {
+          promptTokens,
+          completionTokens,
+          totalTokens: response.response.usageMetadata?.totalTokenCount ?? 0,
+          costUsd,
+        },
+      };
     } catch (err) {
       this.track({
         requestId,
@@ -419,6 +454,8 @@ export class LLMTrackerSDK {
       const inputTokens = response.usage?.inputTokens ?? 0;
       const outputTokens = response.usage?.outputTokens ?? 0;
 
+      const costUsd = calculateCost(params.modelId, inputTokens, outputTokens, this.pricing);
+
       this.track({
         requestId,
         projectName: this.config.projectName,
@@ -429,7 +466,7 @@ export class LLMTrackerSDK {
           completionTokens: outputTokens,
           totalTokens: inputTokens + outputTokens,
         },
-        costUsd: calculateCost(params.modelId, inputTokens, outputTokens, this.pricing),
+        costUsd,
         timestamp: new Date(),
         latencyMs: Date.now() - startTime,
         success: true,
@@ -441,6 +478,12 @@ export class LLMTrackerSDK {
         inputTokens,
         outputTokens,
         stopReason: response.stopReason ?? 'end_turn',
+        usageInfo: {
+          promptTokens: inputTokens,
+          completionTokens: outputTokens,
+          totalTokens: inputTokens + outputTokens,
+          costUsd,
+        },
       };
     } catch (err) {
       this.track({

@@ -69,6 +69,13 @@ export interface BedrockConfig {
   secretAccessKey?: string;
 }
 
+export interface UsageInfo {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+}
+
 export interface SDKConfig {
   projectName: string;
   apiKeys: {
@@ -78,7 +85,7 @@ export interface SDKConfig {
     gemini?: string;
     bedrock?: BedrockConfig;
   };
-  database: DatabaseAdapter;
+  database?: DatabaseAdapter;
   customPricing?: Record<string, ModelPricing>;
   retry?: RetryConfig;
   batchSize?: number;
@@ -86,20 +93,20 @@ export interface SDKConfig {
 }
 
 export type OpenAIChatParams = OpenAI.ChatCompletionCreateParamsNonStreaming;
-export type OpenAIChatResponse = OpenAI.ChatCompletion;
+export type OpenAIChatResponse = OpenAI.ChatCompletion & { usageInfo?: UsageInfo };
 export type OpenAIStreamParams = OpenAI.ChatCompletionCreateParamsStreaming;
 export type OpenAIStreamChunk = OpenAI.ChatCompletionChunk;
 
 export type AzureChatParams = OpenAI.ChatCompletionCreateParamsNonStreaming;
-export type AzureChatResponse = OpenAI.ChatCompletion;
+export type AzureChatResponse = OpenAI.ChatCompletion & { usageInfo?: UsageInfo };
 export type AzureStreamParams = OpenAI.ChatCompletionCreateParamsStreaming;
 
 export type ClaudeMessageParams = Anthropic.MessageCreateParamsNonStreaming;
-export type ClaudeMessageResponse = Anthropic.Message;
+export type ClaudeMessageResponse = Anthropic.Message & { usageInfo?: UsageInfo };
 export type ClaudeStreamParams = Anthropic.MessageCreateParamsStreaming;
 
 export type GeminiGenerateParams = GenerateContentRequest & { model: string };
-export type GeminiGenerateResponse = GenerateContentResult;
+export type GeminiGenerateResponse = GenerateContentResult & { usageInfo?: UsageInfo };
 
 export interface BedrockMessage {
   role: 'user' | 'assistant';
@@ -120,4 +127,5 @@ export interface BedrockChatResponse {
   inputTokens: number;
   outputTokens: number;
   stopReason: string;
+  usageInfo?: UsageInfo;
 }
